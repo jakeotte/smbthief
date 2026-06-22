@@ -267,37 +267,42 @@ def list_shares(conn: SMBConnection) -> list[str]:
     return result
 
 
-def is_share_accessible(conn: SMBConnection, share_name: str) -> bool:
-    """Test access by listing root of share. Returns True if listPath succeeds."""
+def check_share(conn: SMBConnection, share_name: str) -> tuple[bool, bool]:
+    """Test access and emptiness. Returns (accessible, is_empty).
+
+    Empty = root listing succeeds but contains only . and .. entries.
+    """
     share_name = _normalize_share_name(share_name)
     if not share_name:
-        return False
+        return False, False
     for path in ("", "*"):
         try:
-            conn.listPath(share_name, path)
-            _debug(f"  listPath({share_name!r}, {path!r}) -> OK")
-            return True
+            entries = conn.listPath(share_name, path)
+            _debug(f"  listPath({share_name!r}, {path!r}) -> OK ({len(entries)} entries)")
+            real = [e for e in entries if e.get_longname() not in (".", "..")]
+            return True, len(real) == 0
         except SessionError as e:
             _debug(f"  listPath({share_name!r}, {path!r}) -> {e}")
             continue
     _debug(f"  share {share_name!r}: no path worked")
-    return False
+    return False, False
 
 
-def get_accessible_shares(conn: SMBConnection, share_names: list[str]) -> list[str]:
-    """Filter to shares we can actually list (root dir)."""
+def get_accessible_shares(conn: SMBConnection, share_names: list[str]) -> list[tuple[str, bool]]:
+    """Return (name, is_empty) for each accessible share."""
     _debug(f"get_accessible_shares: testing {len(share_names)} shares: {share_names[:10]}{'...' if len(share_names) > 10 else ''}")
-    accessible = []
+    result = []
     for name in share_names:
-        if is_share_accessible(conn, name):
-            accessible.append(name)
-    result = sorted(accessible)
+        accessible, empty = check_share(conn, name)
+        if accessible:
+            result.append((name, empty))
+    result.sort(key=lambda x: x[0])
     _debug(f"get_accessible_shares: -> {len(result)} accessible: {result}")
     return result
 
 
-def process_one(ip: str, domain: str, user: str) -> tuple[str, str, str, list[str]] | None:
-    """Connect, list shares, test access. Returns (ip, domain, user, accessible_shares) or None on failure."""
+def process_one(ip: str, domain: str, user: str) -> tuple[str, str, str, list[tuple[str, bool]]] | None:
+    """Connect, list shares, test access. Returns (ip, domain, user, [(share, is_empty)]) or None on failure."""
     conn = None
     try:
         _debug(f"{ip} ({domain}/{user}): connecting...")
@@ -339,9 +344,9 @@ def process_one(ip: str, domain: str, user: str) -> tuple[str, str, str, list[st
 # -----------------------------------------------------------------------------
 # Dedupe and output
 # -----------------------------------------------------------------------------
-def dedupe_key(ip: str, shares: list[str]) -> tuple[str, tuple[str, ...]]:
-    """Fingerprint for per-IP dedupe: same (ip, frozenset of shares) = duplicate."""
-    return (ip, tuple(sorted(shares)))
+def dedupe_key(ip: str, shares: list[tuple[str, bool]]) -> tuple[str, tuple[str, ...]]:
+    """Fingerprint for per-IP dedupe: same (ip, frozenset of share names) = duplicate."""
+    return (ip, tuple(sorted(s for s, _ in shares)))
 
 
 def _print_banner(target_count: int, workers: int) -> None:
@@ -360,13 +365,9 @@ def _print_banner(target_count: int, workers: int) -> None:
     sys.stdout.flush()
 
 
-def _smbclient_cmd(ip: str, domain: str, user: str, proxychains_conf: str | None) -> str:
-    """Build impacket-smbclient connect command."""
+def _smbclient_cmd(ip: str, domain: str, user: str) -> str:
     target = f"{domain}/{user}@{ip}" if domain else f"{user}@{ip}"
-    cmd = f"impacket-smbclient -no-pass {target}"
-    if proxychains_conf:
-        cmd = f"proxychains4 -q -f {proxychains_conf} {cmd}"
-    return cmd
+    return f"impacket-smbclient -no-pass {target}"
 
 
 def run(
@@ -374,7 +375,6 @@ def run(
     workers: int,
     verbose: bool,
     debug: bool = False,
-    proxychains_conf: str | None = None,
 ) -> None:
     global DEBUG
     DEBUG = debug
@@ -398,7 +398,7 @@ def run(
     seen: set[tuple[str, tuple[str, ...]]] = set()
     print_lock = Lock()
 
-    def maybe_emit(ip: str, domain: str, user: str, accessible: list[str]) -> bool:
+    def maybe_emit(ip: str, domain: str, user: str, accessible: list[tuple[str, bool]]) -> bool:
         if not accessible:
             _debug(f"maybe_emit {ip}: skip (no accessible shares)")
             return False
@@ -410,7 +410,6 @@ def run(
             seen.add(key)
         _debug(f"maybe_emit {ip}: EMIT ({len(accessible)} shares)")
 
-        # Simple lines: header + list with [*] and hyphens
         with print_lock:
             header = f"{ip}  ({domain}/{user})"
             if Fore:
@@ -418,11 +417,15 @@ def run(
             print()
             print(f"  {header}")
             print("  " + "-" * 50)
-            for s in accessible:
-                bullet = _c(Fore.GREEN, "[*]") if Fore else "[*]"
-                name = _c(Fore.GREEN, s) if Fore else s
-                print(f"  {bullet} {name}")
-            cmd = _smbclient_cmd(ip, domain, user, proxychains_conf)
+            for share_name, is_empty in accessible:
+                if is_empty:
+                    bullet = _c(Fore.YELLOW, "[-]") if Fore else "[-]"
+                    label = (_c(Fore.YELLOW, share_name) if Fore else share_name) + " (empty)"
+                else:
+                    bullet = _c(Fore.GREEN, "[*]") if Fore else "[*]"
+                    label = _c(Fore.GREEN, share_name) if Fore else share_name
+                print(f"  {bullet} {label}")
+            cmd = _smbclient_cmd(ip, domain, user)
             cmd_display = _c(Style.DIM, cmd) if Fore else cmd
             print(f"\n  {cmd_display}")
             print()
@@ -486,12 +489,6 @@ def main() -> int:
         action="store_true",
         help="Verbose debug: connect/login/share/listPath/emit per target (stderr)",
     )
-    parser.add_argument(
-        "-P", "--proxychains-conf",
-        metavar="CONF",
-        default=None,
-        help="Print proxychains4 connect command using this conf file (e.g. ../proxychains4.conf)",
-    )
     args = parser.parse_args()
     _colorama_ready()
 
@@ -500,7 +497,7 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 1
 
-    run(args.infile, workers=args.jobs, verbose=args.verbose, debug=args.debug, proxychains_conf=args.proxychains_conf)
+    run(args.infile, workers=args.jobs, verbose=args.verbose, debug=args.debug)
     return 0
 
 

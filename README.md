@@ -22,7 +22,6 @@ python smbthief.py [infile] [-j JOBS] [-v] [-d]
 | `-j`, `--jobs` | `min(32, 4*cpu)` | Concurrent workers |
 | `-v`, `--verbose` | off | Print progress per target to stderr |
 | `-d`, `--debug` | off | Verbose debug output to stderr |
-| `-P`, `--proxychains-conf` | none | Print a `proxychains4` connect command using this conf file |
 
 ## Input format
 
@@ -55,23 +54,6 @@ Run enumeration through a SOCKS proxy:
 proxychains python smbthief.py socks.txt
 ```
 
-Pass `-P` to also print a ready-to-run `impacket-smbclient` connect command under each result:
-
-```bash
-python smbthief.py -P ../proxychains4.conf socks.txt
-```
-
-Output per host:
-
-```
-  192.168.1.10  (DOMAIN/username)
-  --------------------------------------------------
-  [*] Backups
-  [*] Data
-
-  proxychains4 -q -f ../proxychains4.conf impacket-smbclient -no-pass DOMAIN/username@192.168.1.10
-```
-
 ## Output
 
 Only hosts with at least one readable non-admin share are printed. Results are deduped by `(ip, share-set)` to suppress duplicates from the target list.
@@ -80,9 +62,13 @@ Only hosts with at least one readable non-admin share are printed. Results are d
   192.168.1.10  (DOMAIN/username)
   --------------------------------------------------
   [*] Backups
-  [*] Data
+  [-] Data (empty)
   [*] IT
+
+  impacket-smbclient -no-pass DOMAIN/username@192.168.1.10
 ```
+
+`[*]` = share has content. `[-]` = accessible but empty. A connect command is always printed under each result.
 
 Admin shares (`C$`, `ADMIN$`, `IPC$`) are always excluded.
 
