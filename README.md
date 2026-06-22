@@ -22,6 +22,7 @@ python smbthief.py [infile] [-j JOBS] [-v] [-d]
 | `-j`, `--jobs` | `min(32, 4*cpu)` | Concurrent workers |
 | `-v`, `--verbose` | off | Print progress per target to stderr |
 | `-d`, `--debug` | off | Verbose debug output to stderr |
+| `-P`, `--proxychains-conf` | none | Print a `proxychains4` connect command using this conf file |
 
 ## Input format
 
@@ -48,10 +49,27 @@ When `SMB_USER` is set, one connection attempt per unique IP (ignores per-line u
 
 ## Proxychains
 
-Run through a SOCKS proxy:
+Run enumeration through a SOCKS proxy:
 
 ```bash
 proxychains python smbthief.py socks.txt
+```
+
+Pass `-P` to also print a ready-to-run `impacket-smbclient` connect command under each result:
+
+```bash
+python smbthief.py -P ../proxychains4.conf socks.txt
+```
+
+Output per host:
+
+```
+  192.168.1.10  (DOMAIN/username)
+  --------------------------------------------------
+  [*] Backups
+  [*] Data
+
+  proxychains4 -q -f ../proxychains4.conf impacket-smbclient -no-pass DOMAIN/username@192.168.1.10
 ```
 
 ## Output

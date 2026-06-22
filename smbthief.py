@@ -360,11 +360,21 @@ def _print_banner(target_count: int, workers: int) -> None:
     sys.stdout.flush()
 
 
+def _smbclient_cmd(ip: str, domain: str, user: str, proxychains_conf: str | None) -> str:
+    """Build impacket-smbclient connect command."""
+    target = f"{domain}/{user}@{ip}" if domain else f"{user}@{ip}"
+    cmd = f"impacket-smbclient -no-pass {target}"
+    if proxychains_conf:
+        cmd = f"proxychains4 -q -f {proxychains_conf} {cmd}"
+    return cmd
+
+
 def run(
     infile: Path,
     workers: int,
     verbose: bool,
     debug: bool = False,
+    proxychains_conf: str | None = None,
 ) -> None:
     global DEBUG
     DEBUG = debug
@@ -412,6 +422,9 @@ def run(
                 bullet = _c(Fore.GREEN, "[*]") if Fore else "[*]"
                 name = _c(Fore.GREEN, s) if Fore else s
                 print(f"  {bullet} {name}")
+            cmd = _smbclient_cmd(ip, domain, user, proxychains_conf)
+            cmd_display = _c(Style.DIM, cmd) if Fore else cmd
+            print(f"\n  {cmd_display}")
             print()
         return True
 
@@ -473,6 +486,12 @@ def main() -> int:
         action="store_true",
         help="Verbose debug: connect/login/share/listPath/emit per target (stderr)",
     )
+    parser.add_argument(
+        "-P", "--proxychains-conf",
+        metavar="CONF",
+        default=None,
+        help="Print proxychains4 connect command using this conf file (e.g. ../proxychains4.conf)",
+    )
     args = parser.parse_args()
     _colorama_ready()
 
@@ -481,7 +500,7 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 1
 
-    run(args.infile, workers=args.jobs, verbose=args.verbose, debug=args.debug)
+    run(args.infile, workers=args.jobs, verbose=args.verbose, debug=args.debug, proxychains_conf=args.proxychains_conf)
     return 0
 
 
